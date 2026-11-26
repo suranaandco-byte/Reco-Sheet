@@ -99,6 +99,14 @@ if __name__=='__main__':
         try:
             result=fill(uploaded.getvalue(),uploaded.name)
             st.success('REECO sheet ready. Enter your books figures before reviewing differences.')
-            st.download_button('Download filled REECO sheet',result,'REECO Filled.xlsx','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+            report = x.load_workbook(BytesIO(result), read_only=True)
+            try:
+                client = report['Offset Summary']['B2'].value
+            finally:
+                report.close()
+            client = re.sub(r"\s*\([0-9A-Z]{15}\)\s*$", "", client, flags=re.I)
+            client = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", client)
+            client = client[:120].strip(" .") or "Client"
+            st.download_button('Download filled REECO sheet',result,f'REECO - {client}.xlsx','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
         except Exception as e:
             st.error(f'Could not import this workbook: {e}')
