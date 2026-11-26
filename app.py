@@ -63,50 +63,83 @@ def fill(data, name):
         notes.append([line]); notes.cell(notes.max_row,1).data_type='s'
     buf=BytesIO(); wb.save(buf); return buf.getvalue()
 
-if __name__=='__main__':
-    import hashlib
-    import hmac
-    import streamlit as st
-    st.title('GST REECO Sheet Automation')
-    try:
-        password = st.secrets['APP_PASSWORD']
-    except (FileNotFoundError, KeyError):
-        password = None
-    if not isinstance(password, str) or len(password.strip()) < 16 or password == 'REPLACE_WITH_YOUR_PASSWORD':
-        st.error('The app is locked. Set APP_PASSWORD in Streamlit Secrets to a unique password of at least 16 characters.')
-        st.stop()
-    token = hashlib.sha256(password.encode()).digest()
-    def sign_in():
-        supplied = st.session_state.pop('login_password', '')
-        if hmac.compare_digest(supplied.encode(), password.encode()):
-            st.session_state['login_token'] = token
-            st.session_state.pop('login_failed', None)
-        else:
-            st.session_state['login_failed'] = True
-    if st.session_state.get('login_token') != token:
-        with st.form('sign_in'):
-            st.text_input('App password', type='password', key='login_password')
-            st.form_submit_button('Sign in', on_click=sign_in)
-        if st.session_state.get('login_failed'):
-            st.error('Incorrect password.')
-        st.stop()
-    if st.sidebar.button('Sign out'):
-        st.session_state.clear()
-        st.rerun()
-    st.write('Upload a Consolidated 3B Offset Summary to fill the return figures in your REECO template.')
-    uploaded=st.file_uploader('3B Offset Summary',type=['xls','xlsx'])
-    if uploaded:
+def fill_batch(inputs):
+    files, errors, used = [], [], set()
+    for source, data in inputs:
         try:
-            result=fill(uploaded.getvalue(),uploaded.name)
-            st.success('REECO sheet ready. Enter your books figures before reviewing differences.')
+            result = fill(data, source)
             report = x.load_workbook(BytesIO(result), read_only=True)
             try:
                 client = report['Offset Summary']['B2'].value
             finally:
                 report.close()
             client = re.sub(r"\s*\([0-9A-Z]{15}\)\s*$", "", client, flags=re.I)
-            client = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", client)
-            client = client[:120].strip(" .") or "Client"
-            st.download_button('Download filled REECO sheet',result,f'REECO - {client}.xlsx','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-        except Exception as e:
-            st.error(f'Could not import this workbook: {e}')
+            client = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', client)
+            base = 'REECO - ' + (client[:120].strip(' .') or 'Client')
+            name, n = base + '.xlsx', 2
+            while name.casefold() in used:
+                name = f'{base} ({n}).xlsx'
+                n += 1
+            used.add(name.casefold())
+            files.append((name, result))
+        except Exception as exc:
+            errors.append((source, str(exc)))
+    return files, errors
+
+if __name__=='__main__':
+    import hashlib
+    import hmac
+    import streamlit as st
+    st.title('GST REECO Sheet Automation')
+    try:
+        protection = st.secrets.get('PASSWORD_PROTECTION', True)
+    except FileNotFoundError:
+        protection = True
+    if type(protection) is not bool:
+        st.error('Set PASSWORD_PROTECTION to true or false in Streamlit Secrets, without quotes.')
+        st.stop()
+    if not protection:
+        st.session_state.pop('login_token', None)
+    if protection:
+        try:
+            password = st.secrets['APP_PASSWORD']
+        except (FileNotFoundError, KeyError):
+            password = None
+        if not isinstance(password, str) or len(password.strip()) < 16 or password == 'REPLACE_WITH_YOUR_PASSWORD':
+            st.error('The app is locked. Set APP_PASSWORD in Streamlit Secrets to a unique password of at least 16 characters.')
+            st.stop()
+        token = hashlib.sha256(password.encode()).digest()
+        def sign_in():
+            supplied = st.session_state.pop('login_password', '')
+            if hmac.compare_digest(supplied.encode(), password.encode()):
+                st.session_state['login_token'] = token
+                st.session_state.pop('login_failed', None)
+            else:
+                st.session_state['login_failed'] = True
+        if st.session_state.get('login_token') != token:
+            with st.form('sign_in'):
+                st.text_input('App password', type='password', key='login_password')
+                st.form_submit_button('Sign in', on_click=sign_in)
+            if st.session_state.get('login_failed'):
+                st.error('Incorrect password.')
+            st.stop()
+        if st.sidebar.button('Sign out'):
+            st.session_state.clear()
+            st.rerun()
+    from zipfile import ZipFile, ZIP_DEFLATED
+    st.write('Upload one or more Consolidated 3B Offset Summaries. Each input produces its own REECO workbook.')
+    uploaded = st.file_uploader('3B Offset Summaries', type=['xls', 'xlsx'], accept_multiple_files=True)
+    if uploaded:
+        files, errors = fill_batch([(f.name, f.getvalue()) for f in uploaded])
+        for name, error in errors:
+            st.error(f'{name}: {error}')
+        if files:
+            st.success(f'{len(files)} of {len(uploaded)} workbooks ready. Enter books figures before reviewing differences.')
+            if len(uploaded) > 1:
+                archive = BytesIO()
+                with ZipFile(archive, 'w', ZIP_DEFLATED) as bundle:
+                    for name, result in files:
+                        bundle.writestr(name, result)
+                st.download_button('Download all successful workbooks (ZIP)', archive.getvalue(), 'REECO Batch.zip', 'application/zip')
+            for i, (name, result) in enumerate(files):
+                st.download_button(f'Download {name}', result, name, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', key=f'download_{i}')
