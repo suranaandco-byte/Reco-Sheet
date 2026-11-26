@@ -64,8 +64,35 @@ def fill(data, name):
     buf=BytesIO(); wb.save(buf); return buf.getvalue()
 
 if __name__=='__main__':
+    import hashlib
+    import hmac
     import streamlit as st
     st.title('GST REECO Sheet Automation')
+    try:
+        password = st.secrets['APP_PASSWORD']
+    except (FileNotFoundError, KeyError):
+        password = None
+    if not isinstance(password, str) or len(password.strip()) < 16 or password == 'REPLACE_WITH_YOUR_PASSWORD':
+        st.error('The app is locked. Set APP_PASSWORD in Streamlit Secrets to a unique password of at least 16 characters.')
+        st.stop()
+    token = hashlib.sha256(password.encode()).digest()
+    def sign_in():
+        supplied = st.session_state.pop('login_password', '')
+        if hmac.compare_digest(supplied.encode(), password.encode()):
+            st.session_state['login_token'] = token
+            st.session_state.pop('login_failed', None)
+        else:
+            st.session_state['login_failed'] = True
+    if st.session_state.get('login_token') != token:
+        with st.form('sign_in'):
+            st.text_input('App password', type='password', key='login_password')
+            st.form_submit_button('Sign in', on_click=sign_in)
+        if st.session_state.get('login_failed'):
+            st.error('Incorrect password.')
+        st.stop()
+    if st.sidebar.button('Sign out'):
+        st.session_state.clear()
+        st.rerun()
     st.write('Upload a Consolidated 3B Offset Summary to fill the return figures in your REECO template.')
     uploaded=st.file_uploader('3B Offset Summary',type=['xls','xlsx'])
     if uploaded:
